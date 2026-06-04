@@ -1,0 +1,73 @@
+# ============================================================
+# Dockerfile — Python Flask Web Application
+# Author : Kanishk Sandilya
+# App    : Simple REST API / Web App
+# Base   : python:3.11-slim (small and secure)
+# ============================================================
+
+# ── STAGE 1: Base image ──────────────────────────────────────
+# We use 'slim' variant — full Python but without build tools
+# This keeps the final image small (~150MB vs ~900MB for full)
+FROM python:3.11-slim
+
+# ── Set environment variables ────────────────────────────────
+# Prevents Python from writing .pyc files to disk
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Prevents Python from buffering stdout/stderr
+# (so logs appear immediately in docker logs)
+ENV PYTHONUNBUFFERED=1
+
+# Set the Flask environment
+ENV FLASK_ENV=production
+ENV PORT=5000
+
+# ── Set working directory ─────────────────────────────────────
+# All following commands run from /app inside the container
+WORKDIR /app
+
+# ── Install system dependencies (if any) ─────────────────────
+# We update apt, install only what we need, then clean up
+# This avoids bloating the image with package cache
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Copy requirements FIRST (layer caching trick) ─────────────
+# If requirements.txt hasn't changed, Docker reuses the cached
+# pip install layer — making rebuilds much faster!
+COPY requirements.txt .
+
+# ── Install Python dependencies ───────────────────────────────
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# ── Copy application source code ──────────────────────────────
+# We do this AFTER pip install to benefit from layer caching
+# Changing app.py won't invalidate the pip install layer
+COPY . .
+
+# ── Create a non-root user for security ───────────────────────
+# Running as root inside containers is a security risk
+RUN addgroup --system appgroup \
+    && adduser --system --ingroup appgroup appuser
+
+# Switch to non-root user
+USER appuser
+
+# ── Document exposed port ─────────────────────────────────────
+# This doesn't actually publish the port — it's documentation
+# Use -p flag at runtime: docker run -p 8080:5000
+EXPOSE 5000
+
+# ── Health check ──────────────────────────────────────────────
+# Docker will periodically check if the app is still alive
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+# ── Start command ─────────────────────────────────────────────
+# Use exec form (JSON array) — more reliable than shell form
+# This starts the Flask app using Gunicorn (production WSGI server)
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "app:app"]

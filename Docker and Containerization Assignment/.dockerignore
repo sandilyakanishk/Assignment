@@ -1,0 +1,49 @@
+# .dockerignore
+# Files/folders to EXCLUDE from Docker build context
+# Author: Kanishk Sandilya
+# Similar to .gitignore but for Docker builds
+# Keeping the build context small = faster builds
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# Git
+.git/
+.gitignore
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docker files (no need to copy into itself)
+docker-compose*.yml
+Dockerfile*
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,79 @@
+# ============================================================
+# docker-compose.yml — Multi-Container Application
+# Author : Kanishk Sandilya
+# Services: Flask App + PostgreSQL Database + Nginx Proxy
+# ============================================================
+# Usage:
+#   Start all services:  docker compose up -d
+#   View logs:           docker compose logs -f
+#   Stop everything:     docker compose down
+#   Stop + delete data:  docker compose down -v
+# ============================================================
+
+version: '3.9'
+
+services:
+
+  # ── 1. Flask Web Application ──────────────────────────────
+  web:
+    build:
+      context: .                      # Build from current directory
+      dockerfile: Dockerfile.python   # Use our Dockerfile
+    container_name: kanishk_flask_app
+    restart: unless-stopped           # Auto-restart if it crashes
+    environment:
+      - FLASK_ENV=production
+      - PORT=5000
+      - DATABASE_URL=postgresql://kanishk:secret@db:5432/appdb
+    ports:
+      - "5000:5000"                   # host_port:container_port
+    depends_on:
+      db:
+        condition: service_healthy    # Wait for DB to be ready
+    networks:
+      - app-network
+    volumes:
+      - ./logs:/app/logs              # Persist logs outside container
+
+  # ── 2. PostgreSQL Database ────────────────────────────────
+  db:
+    image: postgres:15-alpine         # Use official Postgres image
+    container_name: kanishk_postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=kanishk
+      - POSTGRES_PASSWORD=secret      # In production: use Docker secrets
+      - POSTGRES_DB=appdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data   # Persistent DB storage
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kanishk -d appdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 3. Nginx Reverse Proxy ────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: kanishk_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"                       # Nginx listens on port 80
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro  # Mount our config
+    depends_on:
+      - web
+    networks:
+      - app-network
+
+# ── Named volumes (persist data across container restarts) ────
+volumes:
+  postgres_data:
+    driver: local
+
+# ── Custom network (containers communicate by service name) ───
+networks:
+  app-network:
+    driver: bridge
