@@ -1,0 +1,13 @@
+target/
+*.class
+.idea/
+*.iml
+.vscode/
+.DS_Store
+HELP.md
+
+# Load test outputs
+*.jtl
+jmeter.log
+gatling/
+results/
