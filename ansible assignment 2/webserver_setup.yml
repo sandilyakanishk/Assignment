@@ -1,0 +1,189 @@
+---
+# ============================================================
+# Ansible Playbook: Web Server Setup & Configuration
+# Author     : Kanishk Sandilya
+# Description: Automates installation and configuration of
+#              Nginx web server on Ubuntu/Debian systems
+# ============================================================
+
+- name: Setup and Configure Nginx Web Server
+  hosts: webservers
+  become: true          # Run tasks as sudo/root
+  vars:
+    server_name: "kanishk-webserver.local"
+    web_root: "/var/www/html"
+    http_port: 80
+    https_port: 443
+    admin_email: "kanishk@example.com"
+    site_name: "Kanishk's Web Server"
+
+  tasks:
+
+    # --------------------------------------------------------
+    # STEP 1: Update the system package cache
+    # --------------------------------------------------------
+    - name: Update apt package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600   # Only update if cache is older than 1 hour
+
+    # --------------------------------------------------------
+    # STEP 2: Install Nginx web server
+    # --------------------------------------------------------
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present           # Install if not already installed
+
+    # --------------------------------------------------------
+    # STEP 3: Install other useful packages
+    # --------------------------------------------------------
+    - name: Install supporting packages
+      apt:
+        name:
+          - curl
+          - ufw                  # Uncomplicated Firewall
+          - openssl              # For SSL certificate generation
+        state: present
+
+    # --------------------------------------------------------
+    # STEP 4: Create the web root directory
+    # --------------------------------------------------------
+    - name: Create web root directory
+      file:
+        path: "{{ web_root }}"
+        state: directory
+        owner: www-data          # Nginx runs as www-data user
+        group: www-data
+        mode: '0755'
+
+    # --------------------------------------------------------
+    # STEP 5: Deploy a sample index.html page
+    # --------------------------------------------------------
+    - name: Deploy sample index.html
+      copy:
+        dest: "{{ web_root }}/index.html"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>{{ site_name }}</title>
+            <style>
+              body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+              h1   { color: #2c3e50; }
+              p    { color: #7f8c8d; }
+            </style>
+          </head>
+          <body>
+            <h1>Welcome to {{ site_name }}</h1>
+            <p>This server was configured by Kanishk Sandilya using Ansible.</p>
+            <p>Server: {{ ansible_hostname }} | IP: {{ ansible_default_ipv4.address }}</p>
+          </body>
+          </html>
+
+    # --------------------------------------------------------
+    # STEP 6: Deploy Nginx virtual host configuration
+    # --------------------------------------------------------
+    - name: Create Nginx virtual host config
+      template:
+        src: nginx_vhost.conf.j2    # Uses Jinja2 template (see templates folder)
+        dest: /etc/nginx/sites-available/{{ server_name }}
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload Nginx           # Triggers handler if config changes
+
+    # --------------------------------------------------------
+    # STEP 7: Enable the virtual host (create symlink)
+    # --------------------------------------------------------
+    - name: Enable virtual host
+      file:
+        src: /etc/nginx/sites-available/{{ server_name }}
+        dest: /etc/nginx/sites-enabled/{{ server_name }}
+        state: link                  # Creates a symbolic link
+
+    # --------------------------------------------------------
+    # STEP 8: Remove default Nginx site to avoid conflicts
+    # --------------------------------------------------------
+    - name: Remove default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+    # --------------------------------------------------------
+    # STEP 9: Validate Nginx configuration syntax
+    # --------------------------------------------------------
+    - name: Test Nginx configuration
+      command: nginx -t
+      changed_when: false            # This task never "changes" anything
+
+    # --------------------------------------------------------
+    # STEP 10: Configure UFW firewall rules
+    # --------------------------------------------------------
+    - name: Allow HTTP traffic (port 80)
+      ufw:
+        rule: allow
+        port: "{{ http_port }}"
+        proto: tcp
+
+    - name: Allow HTTPS traffic (port 443)
+      ufw:
+        rule: allow
+        port: "{{ https_port }}"
+        proto: tcp
+
+    - name: Allow SSH (so we don't lock ourselves out!)
+      ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: Enable UFW firewall
+      ufw:
+        state: enabled
+        policy: deny               # Deny all traffic by default
+
+    # --------------------------------------------------------
+    # STEP 11: Make sure Nginx starts on system boot
+    # --------------------------------------------------------
+    - name: Enable Nginx to start on boot
+      systemd:
+        name: nginx
+        enabled: yes
+
+    # --------------------------------------------------------
+    # STEP 12: Start Nginx service (if not already running)
+    # --------------------------------------------------------
+    - name: Start Nginx service
+      systemd:
+        name: nginx
+        state: started
+
+    # --------------------------------------------------------
+    # STEP 13: Verify Nginx is actually running
+    # --------------------------------------------------------
+    - name: Check Nginx service status
+      command: systemctl is-active nginx
+      register: nginx_status
+      changed_when: false
+
+    - name: Print Nginx status
+      debug:
+        msg: "Nginx is {{ nginx_status.stdout }} on {{ ansible_hostname }}"
+
+  # ----------------------------------------------------------
+  # HANDLERS: Only run when notified by a task
+  # ----------------------------------------------------------
+  handlers:
+    - name: Reload Nginx
+      systemd:
+        name: nginx
+        state: reloaded            # Graceful reload (no downtime)
+
+    - name: Restart Nginx
+      systemd:
+        name: nginx
+        state: restarted

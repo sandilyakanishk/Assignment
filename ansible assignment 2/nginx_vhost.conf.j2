@@ -1,0 +1,38 @@
+# ============================================================
+# Nginx Virtual Host Template (Jinja2)
+# File: templates/nginx_vhost.conf.j2
+# Author: Kanishk Sandilya
+# ============================================================
+
+server {
+    listen {{ http_port }};
+    listen [::]:{{ http_port }};      # IPv6 support
+
+    server_name {{ server_name }};
+    root        {{ web_root }};
+    index       index.html index.htm;
+
+    # ---- Access and error logs ----
+    access_log  /var/log/nginx/{{ server_name }}_access.log;
+    error_log   /var/log/nginx/{{ server_name }}_error.log;
+
+    # ---- Serve static files ----
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # ---- Block access to hidden files (like .htaccess) ----
+    location ~ /\. {
+        deny all;
+    }
+
+    # ---- Security headers ----
+    add_header X-Frame-Options        "SAMEORIGIN"  always;
+    add_header X-XSS-Protection       "1; mode=block" always;
+    add_header X-Content-Type-Options "nosniff"     always;
+
+    # ---- Gzip compression for faster page loads ----
+    gzip            on;
+    gzip_types      text/plain text/css application/json application/javascript;
+    gzip_min_length 1024;
+}
