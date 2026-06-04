@@ -1,0 +1,52 @@
+# =============================================================
+#  docker-compose.override.yml  —  Development Overrides
+#  Author  : Kanishk Sandilya
+#
+#  This file is AUTO-LOADED by Docker Compose when you run
+#  "docker compose up" locally.
+#  It overrides settings from docker-compose.yml for dev mode:
+#    - Exposes extra ports for direct debugging
+#    - Enables hot-reload by mounting source directories
+#    - Sets DEBUG env vars
+#    - Adds pgAdmin for easy database browsing
+#
+#  In production, skip this file:
+#    docker compose -f docker-compose.yml up -d
+# =============================================================
+
+version: "3.9"
+
+services:
+
+  # Override backend: enable debug mode + expose port directly
+  backend:
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+    ports:
+      - "5000:5000"                   # Direct access for testing/curl
+    command: flask run --host=0.0.0.0 --port=5000 --reload
+
+  # Override db: expose Postgres port for local DB clients
+  db:
+    ports:
+      - "5432:5432"                   # Connect with DBeaver / pgAdmin
+
+  # Override redis: expose Redis port for local inspection
+  redis:
+    ports:
+      - "6379:6379"                   # Connect with redis-cli locally
+
+  # Extra dev-only service: pgAdmin web UI for Postgres
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ks_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: kanishk@dev.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"                     # Open http://localhost:5050
+    networks:
+      - backend-net
+    depends_on:
+      - db
