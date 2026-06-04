@@ -1,0 +1,10 @@
+target/
+*.class
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Deployment artifacts
+*.bak
+nginx/nginx.conf.bak

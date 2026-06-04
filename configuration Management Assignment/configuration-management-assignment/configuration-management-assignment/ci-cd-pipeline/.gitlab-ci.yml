@@ -1,0 +1,118 @@
+# ============================================================================
+# GitLab CI/CD Pipeline — Continuous Delivery with Blue-Green Deployment
+# ============================================================================
+# Equivalent to the Jenkinsfile, expressed in GitLab CI syntax.
+#
+# Stages:
+#   build → test → package → deploy → verify
+#
+# The `deploy` job runs the SAME deploy.sh script as Jenkins — the CI tool
+# is just an executor; the deployment logic lives in deployment/scripts/.
+# ============================================================================
+
+stages:
+  - build
+  - test
+  - package
+  - deploy
+  - verify
+
+variables:
+  IMAGE_NAME: bluegreen-app
+  IMAGE_TAG: "$CI_PIPELINE_IID"               # monotonically increasing
+  FULL_IMAGE: "$CI_REGISTRY_IMAGE:$CI_PIPELINE_IID"
+  DEPLOY_DIR: "ci-cd-pipeline/deployment"
+
+# Cached Maven dependencies between jobs
+cache:
+  key: maven-deps
+  paths:
+    - .m2/repository
+
+before_script:
+  - export MAVEN_OPTS="-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+
+# ---------------- BUILD ----------------
+build:
+  stage: build
+  image: maven:3.9-eclipse-temurin-17
+  script:
+    - cd ci-cd-pipeline/app
+    - mvn -B clean package -DskipTests
+  artifacts:
+    paths:
+      - ci-cd-pipeline/app/target/*.jar
+    expire_in: 1 day
+
+# ---------------- TEST ----------------
+unit-tests:
+  stage: test
+  image: maven:3.9-eclipse-temurin-17
+  script:
+    - cd ci-cd-pipeline/app
+    - mvn -B test
+  artifacts:
+    when: always
+    reports:
+      junit: ci-cd-pipeline/app/target/surefire-reports/TEST-*.xml
+
+# ---------------- PACKAGE ----------------
+docker-build:
+  stage: package
+  image: docker:24
+  services:
+    - docker:24-dind
+  script:
+    - cd ci-cd-pipeline/app
+    - docker build -t "$IMAGE_NAME:$IMAGE_TAG" .
+    - docker tag "$IMAGE_NAME:$IMAGE_TAG" "$FULL_IMAGE"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker push "$FULL_IMAGE"
+
+# ---------------- DEPLOY (blue-green) ----------------
+deploy:
+  stage: deploy
+  image: docker:24
+  services:
+    - docker:24-dind
+  # Only deploy on main; feature branches stop after build+test+package
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - cd "$DEPLOY_DIR"
+    - IMAGE_NAME="$IMAGE_NAME" ./scripts/deploy.sh "$IMAGE_TAG"
+  environment:
+    name: production
+    url: http://your-domain.example.com
+    # GitLab knows how to use this — see "Environments & deployments" tab
+    on_stop: rollback
+
+rollback:
+  stage: deploy
+  image: docker:24
+  services:
+    - docker:24-dind
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual         # only triggered manually from the GitLab UI
+  script:
+    - cd "$DEPLOY_DIR"
+    - ./scripts/rollback.sh
+  environment:
+    name: production
+    action: stop
+
+# ---------------- VERIFY ----------------
+verify-live:
+  stage: verify
+  image: alpine:3.20
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - apk add --no-cache curl
+    - |
+      echo "Verifying live host returns the new version ..."
+      response=$(curl -fs http://nginx/)
+      echo "$response"
+      echo "$response" | grep -q "\"version\":\"$IMAGE_TAG\"" \
+          || { echo "ERROR: live version != $IMAGE_TAG"; exit 1; }

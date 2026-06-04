@@ -1,0 +1,118 @@
+---
+# ============================================================================
+# Ansible Blue-Green Deployment Playbook
+# ============================================================================
+# Performs the same deployment as deploy.sh, but using Ansible — demonstrating
+# how a configuration-management tool (from Q1's comparison) slots into the
+# CI pipeline (Q2). The Jenkinsfile / GitLab CI job can invoke this playbook
+# instead of the bash script when running against multiple remote hosts.
+#
+# Why use Ansible here?
+#   - Multi-host orchestration (deploying to a fleet of nginx + app servers)
+#   - Inventory-driven: one playbook, many environments (dev / stage / prod)
+#   - Built-in idempotency: re-running won't double-restart anything
+#
+# Run:
+#   ansible-playbook -i inventory.ini ansible/deploy.yml -e "new_tag=1.2.3"
+# ============================================================================
+
+- name: Blue-Green Deployment
+  hosts: app_servers
+  become: true
+  vars:
+    image_name: "bluegreen-app"
+    new_tag: "{{ new_tag | mandatory }}"          # fails fast if not provided
+    nginx_conf_path: /opt/bluegreen/nginx/nginx.conf
+    health_retries: 30
+    health_interval: 2
+
+  tasks:
+
+    # ---------- 1. Detect current active color ----------
+    - name: Detect currently-active color from nginx config
+      shell: |
+        grep -oE 'server app-(blue|green):8080;\s*# ACTIVE_BACKEND' {{ nginx_conf_path }} \
+          | grep -oE '(blue|green)' | head -n1
+      register: active_color_raw
+      changed_when: false
+
+    - name: Compute target color (the other one)
+      set_fact:
+        active_color: "{{ active_color_raw.stdout | default('blue', true) }}"
+        target_color: "{{ 'green' if active_color_raw.stdout == 'blue' else 'blue' }}"
+        target_port:  "{{ '8082'  if active_color_raw.stdout == 'blue' else '8081' }}"
+
+    - name: Show deployment plan
+      debug:
+        msg: |
+          Active   : {{ active_color }}
+          Deploying: {{ target_color }} (port {{ target_port }})
+          Image    : {{ image_name }}:{{ new_tag }}
+
+    # ---------- 2. Pull image and restart target container ----------
+    - name: Pull new image
+      community.docker.docker_image:
+        name: "{{ image_name }}"
+        tag: "{{ new_tag }}"
+        source: pull
+
+    - name: Restart {{ target_color }} container with new image
+      community.docker.docker_container:
+        name: "app-{{ target_color }}"
+        image: "{{ image_name }}:{{ new_tag }}"
+        state: started
+        restart: true
+        recreate: true
+        env:
+          APP_COLOR: "{{ target_color }}"
+          APP_VERSION: "{{ new_tag }}"
+        ports:
+          - "{{ target_port }}:8080"
+        networks:
+          - name: bluegreen-net
+
+    # ---------- 3. Wait for the new container to be healthy ----------
+    - name: Wait for {{ target_color }} to report UP
+      uri:
+        url: "http://localhost:{{ target_port }}/actuator/health"
+        return_content: yes
+      register: health_check
+      until: health_check.status == 200 and '"UP"' in health_check.content
+      retries: "{{ health_retries }}"
+      delay:   "{{ health_interval }}"
+
+    # ---------- 4. Run smoke tests ----------
+    - name: Smoke test — root endpoint returns expected color
+      uri:
+        url: "http://localhost:{{ target_port }}/"
+        return_content: yes
+      register: smoke
+      failed_when: "'\"color\":\"' + target_color + '\"' not in smoke.content"
+
+    # ---------- 5. Atomic switch — rewrite nginx config + reload ----------
+    - name: Rewrite nginx upstream to point to {{ target_color }}
+      replace:
+        path: "{{ nginx_conf_path }}"
+        regexp: 'server app-(blue|green):8080;\s*# ACTIVE_BACKEND'
+        replace: "server app-{{ target_color }}:8080;  # ACTIVE_BACKEND"
+
+    - name: Validate nginx config
+      command: docker exec bluegreen-nginx nginx -t
+
+    - name: Reload nginx (graceful, zero-downtime)
+      command: docker exec bluegreen-nginx nginx -s reload
+
+    # ---------- 6. Verify live host serves the new version ----------
+    - name: Verify live port (80) returns new version
+      uri:
+        url: "http://localhost/"
+        return_content: yes
+      register: live
+      failed_when: ('"version":"' + new_tag + '"') not in live.content
+
+    - name: Summary
+      debug:
+        msg: |
+          ✓ Deployment complete.
+          ✓ Live traffic now on:  {{ target_color }} ({{ image_name }}:{{ new_tag }})
+          ✓ Rollback target:      {{ active_color }} (still running, fully warm)
